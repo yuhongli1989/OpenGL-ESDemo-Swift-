@@ -187,6 +187,7 @@ class HLView: UIView {
     
     func compileShader(_ shader:inout GLuint,_ type:GLenum,_ file:String)  {
         guard let content = try? String(contentsOfFile: file) else{return}
+        
         let source = content.utf8CString
         var sourcePtr = source.withUnsafeBufferPointer { (ptr:UnsafeBufferPointer<GLchar>) in
             return ptr.baseAddress

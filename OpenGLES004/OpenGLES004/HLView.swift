@@ -46,6 +46,8 @@ class HLView: UIView {
     var vertexMax = 64
     var vertexBuffer = [GLfloat](repeating: 0, count: 64 * 2)
     
+    var location:CGPoint = CGPoint.zero
+    var previousLocation:CGPoint = CGPoint.zero
     lazy var program:[programInfo_t] = {
         return [programInfo_t( "point.vsh", "point.fsh")]
         
@@ -63,7 +65,27 @@ class HLView: UIView {
         for p in program{
             free(p.uniform)
         }
+        if viewFrameBuffer != 0 {
+            glDeleteFramebuffers(1, &viewFrameBuffer)
+            viewFrameBuffer=0
+        }
         
+        if viewRenderBuffer != 0 {
+            glDeleteRenderbuffers(1, &viewRenderBuffer)
+            viewRenderBuffer = 0
+        }
+        
+        if brushTexture.id != 0 {
+            glDeleteTextures(1, &brushTexture.id)
+            brushTexture.id = 0
+        }
+        if vboId != 0 {
+            glDeleteBuffers(1, &vboId)
+            vboId = 0
+        }
+        if EAGLContext.current() == context {
+            EAGLContext.setCurrent(nil)
+        }
     }
     
     
@@ -77,17 +99,19 @@ class HLView: UIView {
         let eaglLayer = self.layer as! CAEAGLLayer
         eaglLayer.isOpaque = true
         eaglLayer.drawableProperties = [kEAGLDrawablePropertyRetainedBacking:NSNumber(value: false),kEAGLDrawablePropertyColorFormat:kEAGLColorFormatRGBA8]
-        if !EAGLContext.setCurrent(context){
-            print("init context error")
-        }
+        
         self.contentScaleFactor = UIScreen.main.scale
         needsErase = true
         
     }
     
     override func layoutSubviews() {
+        if !EAGLContext.setCurrent(context){
+            print("init context error")
+        }
         if !initialized{
             initialized = initGL()
+            print("initialized===\(initialized)")
         }else{
             resizeFromLayer(self.layer as! CAEAGLLayer)
         }
@@ -134,17 +158,20 @@ class HLView: UIView {
     func initGL()->Bool  {
         glGenFramebuffers(1, &viewFrameBuffer)
         glGenRenderbuffers(1, &viewRenderBuffer)
+        glBindFramebuffer(GLenum(GL_FRAMEBUFFER), viewFrameBuffer)
+        glBindRenderbuffer(GLenum(GL_RENDERBUFFER), viewRenderBuffer)
         context?.renderbufferStorage(Int(GL_RENDERBUFFER), from: layer as! CAEAGLLayer)
         glFramebufferRenderbuffer(GLenum(GL_FRAMEBUFFER), GLenum(GL_COLOR_ATTACHMENT0), GLenum(GL_RENDERBUFFER), viewRenderBuffer)
         glGetRenderbufferParameteriv(GLenum(GL_RENDERBUFFER), GLenum(GL_RENDERBUFFER_WIDTH), &backingWidth)
         glGetRenderbufferParameteriv(GLenum(GL_RENDERBUFFER), GLenum(GL_RENDERBUFFER_HEIGHT), &backingHeight)
         if glCheckFramebufferStatus(GLenum(GL_FRAMEBUFFER)) != GL_FRAMEBUFFER_COMPLETE{
+            print("glCheckFramebufferStatus error")
             return false
         }
         
         glViewport(0, 0, backingWidth, backingHeight)
         glGenBuffers(1, &vboId)
-        brushTexture = textureFromName("Particle.png")
+        brushTexture = textureFromName("Particle")
         setupShaders()
         glEnable(GLenum(GL_BLEND))
         glBlendFunc(GLenum(GL_ONE), GLenum(GL_ONE_MINUS_SRC_ALPHA))
@@ -178,6 +205,7 @@ class HLView: UIView {
     }
     
     func renderLine(_ start:CGPoint,_ end:CGPoint)  {
+        
         let scale = self.contentScaleFactor
         let startX:Float = Float(start.x*scale)
         let startY:Float = Float(start.y*scale)
@@ -207,28 +235,51 @@ class HLView: UIView {
         glDrawArrays(GLenum(GL_POINTS), 0, GLsizei(vertexCount))
         glBindRenderbuffer(GLenum(GL_RENDERBUFFER), viewRenderBuffer)
         context?.presentRenderbuffer(Int(GL_RENDERBUFFER))
+//        context?.presentRenderbuffer(Int(GL_RENDERBUFFER), afterMinimumDuration: 0)
     }
     
     func setupShaders()  {
         for i in 0..<NUM_PROGRAMS{
-            let vsrc = program[i].vert
-            let frag = program[i].frag
+            
+            let vsrc = readFile(pathForResource(program[i].vert))!
+            let frag = readFile(pathForResource(program[i].frag))!
             var attribCt:GLsizei = 0
             var attribUsed = [String](repeating: "", count: NUM_ATTRIBS)
-            var attrib = [GLint](repeating: 0, count: NUM_ATTRIBS)
+            var attrib:[GLint] = [0]
             var attribName = ["inVertex"]
-            var uniformName = ["MVP","pointSize","vertexColor","texture"]
+            // 用 String 会有bug
+            let mvpPtr = NSString(string: "MVP").utf8String
+            let pointSizePtr = NSString(string: "pointSize").utf8String
+            let vertexColorPtr = NSString(string: "vertexColor").utf8String
+            let texturePtr = NSString(string: "texture").utf8String
+            
+            var uniformName:[UnsafePointer<GLchar>?] = [mvpPtr,pointSizePtr,vertexColorPtr,texturePtr]
+
+
+            
             for j in 0..<NUM_ATTRIBS{
-                if vsrc.contains(attribName[j]){
+                
+                if vsrc.contains(attribName[j]) {
                     attrib[Int(attribCt)] = GLint(j)
                     attribUsed[Int(attribCt)] = attribName[j]
                     attribCt += 1
                 }
             }
-            var attrName:UnsafePointer<GLchar>? = attribUsed[0].withCString{$0}
-            var uniformn:UnsafePointer<GLchar>? = uniformName[0].withCString{$0}
             
-            glueCreateProgram(vsrc.withCString{$0}, frag.withCString{$0}, attribCt, &attrName, &attrib, GLsizei(NUM_UNIFORMS), &uniformn, program[i].uniform, &program[i].id)
+            
+            let attrName2 = attribUsed[0].utf8CString
+            var attrName2Ptr = attrName2.withUnsafeBufferPointer{$0.baseAddress}
+
+            let vsrcC = vsrc.utf8CString
+            let vstcPtr = vsrcC.withUnsafeBufferPointer{$0.baseAddress}
+            let fragC = frag.utf8CString
+            let fragPtr = fragC.withUnsafeBufferPointer{$0.baseAddress}
+            
+            
+            glueCreateProgram(vstcPtr, fragPtr, attribCt, &attrName2Ptr, attrib, GLsizei(NUM_UNIFORMS), &uniformName, program[i].uniform, &(program[i].id))
+            
+            print("program[i].uniform.0=\(program[i].uniform.pointee)")
+
             if i == PROGRAM_POINT{
                 glUseProgram(program[PROGRAM_POINT].id)
                 glUniform1i(program[PROGRAM_POINT].uniform[UNIFORM_TEXTURE], 0)
@@ -252,6 +303,7 @@ class HLView: UIView {
         }
     }
     
+    
     func textureFromName(_ name:String)->textureInfo_t?  {
         guard let image = UIImage(named: name)?.cgImage else{
             print("纹理加载失败")
@@ -261,7 +313,7 @@ class HLView: UIView {
         let height = image.height
         
         //        CGImageAlphaInfo.premultipliedLast
-        let imagePtr = UnsafeMutableRawPointer.allocate(byteCount: width*height*4, alignment: MemoryLayout<GLbyte>.size)
+        let imagePtr = UnsafeMutableRawPointer.allocate(byteCount: width*height*4, alignment: MemoryLayout<GLubyte>.size)
         defer {
             free(imagePtr)
         }
@@ -279,15 +331,79 @@ class HLView: UIView {
     }
     
     
+    
+    
     func setBrushColor(_ red:CGFloat,_ green:CGFloat,_ blue:CGFloat )  {
         
         brushColor[0] = GLfloat(red*kBrushOpacity)
         brushColor[1] = GLfloat(green*kBrushOpacity)
         brushColor[2] = GLfloat(blue*kBrushOpacity)
         brushColor[3] = GLfloat(kBrushOpacity)
-//        if initialized {
-//            glUseProgram(program.id)
-//        }
+        if initialized {
+            glUseProgram(program[PROGRAM_POINT].id)
+            glUniform4fv(program[PROGRAM_POINT].uniform[UNIFORM_VERTEX_COLOR], 1, brushColor)
+        }
+    }
+    
+    
+    func pathForResource(_ str:String)->String?  {
+        let path = Bundle.main.path(forResource: str, ofType: nil)
+        return path
+    }
+    
+    func readFile(_ path:String?)->String?  {
+        guard let p = path,let content = try? String(contentsOfFile: p) else {
+            return nil
+        }
+        
+        return content
+    }
+    
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let bounds = self.bounds
+        let touch = event?.touches(for: self)?.first
+        firstTouch = true
+        location = touch!.location(in: self)
+        location.y = bounds.size.height - location.y
+        
+    }
+    
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let bounds = self.bounds
+        let touch = event?.touches(for: self)?.first
+        if firstTouch {
+            firstTouch = false
+            previousLocation = touch!.previousLocation(in: self)
+            previousLocation.y = bounds.size.height - previousLocation.y
+        }else{
+            location = touch!.location(in: self)
+            location.y = bounds.size.height - location.y
+            previousLocation = touch!.previousLocation(in: self)
+            previousLocation.y = bounds.size.height - previousLocation.y
+        }
+        
+        
+        self.renderLine(previousLocation, location)
+    }
+    
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let bounds = self.bounds
+        let touch = event?.touches(for: self)?.first
+        if firstTouch {
+            firstTouch = false
+            previousLocation = touch!.previousLocation(in: self)
+            previousLocation.y = bounds.size.height - previousLocation.y
+            
+            
+            self.renderLine(previousLocation, location)
+        }
+    }
+    
+    @IBAction func clearClick(_ sender: Any) {
+        erase()
+    }
+    override var canBecomeFirstResponder: Bool{
+        return true
     }
 
 }
@@ -297,6 +413,7 @@ struct programInfo_t {
     var vert:String
     var frag:String
     var uniform = UnsafeMutablePointer<GLint>.allocate(capacity: NUM_UNIFORMS)
+//    var uniform:(GLint,GLint,GLint,GLint) = (0,0,0,0)
     var id:GLuint = 0
     init(_ v:String,_ f:String) {
         vert = v

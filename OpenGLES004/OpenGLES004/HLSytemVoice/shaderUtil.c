@@ -164,7 +164,7 @@ GLint glueCreateProgram(const GLchar *vertSource, const GLchar *fragSource,
 	status *= glueCompileShader(GL_FRAGMENT_SHADER, 1, &fragSource, &fragShader);
 	glAttachShader(prog, vertShader);
 	glAttachShader(prog, fragShader);
-	
+    
 	for (i = 0; i < attribNameCt; i++)
 	{
 		if(strlen(attribNames[i]))
